@@ -21,9 +21,8 @@ class DecentralizedExchangeSimulator:
     - Created links have a cost, an expiry lifetime, and a degradation factor (per-edge or default).
     - Link creation is unilateral: the endpoint with positive best gain pays the cost.
     - Links can be refreshed when quality falls below a threshold (optional).
-    - Link creation is sequential: after one link is accepted, all remaining candidate gains
-      are recomputed. This avoids the problem where many simultaneous links to the same
-      agent make each other unprofitable.
+    - Link creation is evaluated from one snapshot per slot, then profitable actions are
+      applied together. This removes order effects during candidate selection.
     """
 
     def __init__(
@@ -40,7 +39,7 @@ class DecentralizedExchangeSimulator:
         edge_degradations: Optional[Dict[Edge, float]] = None,
         refresh_threshold: Optional[float] = 0.8,
         discount: float = 0.95,
-        max_new_links_per_slot: int = 1,
+        max_new_links_per_slot: Optional[int] = None,
         rng_seed: Optional[int] = None,
     ) -> None:
         self.agents = list(agents)
@@ -70,6 +69,8 @@ class DecentralizedExchangeSimulator:
             raise ValueError("refresh_threshold must be in (0, 1] or None.")
         if not 0 <= discount < 1:
             raise ValueError("discount must be in [0, 1).")
+        if max_new_links_per_slot is not None and max_new_links_per_slot <= 0:
+            raise ValueError("max_new_links_per_slot must be positive or None.")
 
         self.strategy = self._make_strategy(strategy)
         self.utility_formula = utility_formula or self.linear_received_utility
@@ -158,7 +159,7 @@ class DecentralizedExchangeSimulator:
 
     def find_equilibrium(
         self,
-        max_steps: int = 1000,
+        max_steps: int = 100000,
         precision: int = 9,
         eps: float = 1e-9,
     ) -> Optional[Tuple[int, int]]:
@@ -170,7 +171,7 @@ class DecentralizedExchangeSimulator:
 
     def find_equilibrium_states(
         self,
-        max_steps: int = 1000,
+        max_steps: int = 100000,
         precision: int = 9,
         eps: float = 1e-9,
     ) -> Optional[Tuple[int, int, List[SimulationState]]]:
@@ -207,12 +208,12 @@ class DecentralizedExchangeSimulator:
         """
         One timeslot:
         1. Age/degrade links and remove expired links.
-        2. Create profitable new links sequentially.
+        2. Evaluate profitable link actions from the current snapshot and apply them together.
         3. Allocate resources using the selected strategy.
         4. Compute received resources, utilities, and exchange ratios.
         """
         self._age_and_remove_expired_links()
-        _, creation_costs = self._create_profitable_links_sequentially()
+        _, creation_costs = self._create_profitable_links()
         allocation = self._compute_allocations(creation_costs)
         received = self._compute_received(allocation)
         utilities = self._compute_utilities(received)
@@ -279,79 +280,81 @@ class DecentralizedExchangeSimulator:
             ratios[i] = received_total / contributed
         return ratios
 
-    def _create_profitable_links_sequentially(self) -> Tuple[List[Edge], Dict[AgentId, float]]:
-        created: List[Edge] = []
+    def _create_profitable_links(self) -> Tuple[List[Edge], Dict[AgentId, float]]:
         creation_costs: Dict[AgentId, float] = {i: 0.0 for i in self.agents}
+        actions: List[Tuple[float, str, Edge, AgentId]] = []
 
-        for _ in range(self.max_new_links_per_slot):
-            best_edge: Optional[Edge] = None
-            best_score = 0.0
-            best_proposer: Optional[AgentId] = None
-            best_action: str = "new"
+        for edge in self.candidate_edges():
+            u, v = edge
+            cost = self.edge_costs.get(edge, 0.0)
+            lifetime = self.edge_lifetimes.get(edge, self.expiry)
+            degradation = self.edge_degradations.get(edge, self.degradation)
 
-            for edge in self.candidate_edges():
-                u, v = edge
-                cost = self.edge_costs.get(edge, 0.0)
-                lifetime = self.edge_lifetimes.get(edge, self.expiry)
-                degradation = self.edge_degradations.get(edge, self.degradation)
+            gain_u = self.estimate_link_gain(u, v, cost, lifetime, degradation)
+            gain_v = self.estimate_link_gain(v, u, cost, lifetime, degradation)
 
-                gain_u = self.estimate_link_gain(u, v, cost, lifetime, degradation)
-                gain_v = self.estimate_link_gain(v, u, cost, lifetime, degradation)
+            if gain_u >= gain_v:
+                proposer = u
+                score = gain_u
+            else:
+                proposer = v
+                score = gain_v
 
-                if gain_u >= gain_v:
-                    proposer = u
-                    score = gain_u
-                else:
-                    proposer = v
-                    score = gain_v
+            if score > 0:
+                actions.append((score, "new", edge, proposer))
 
-                if score > 0 and score > best_score:
-                    best_edge = edge
-                    best_score = score
-                    best_proposer = proposer
-                    best_action = "new"
+        for edge in self.refresh_candidates():
+            link = self.state.links[edge]
+            u, v = edge
+            cost = self.edge_costs.get(edge, 0.0)
+            lifetime = self.edge_lifetimes.get(edge, self.expiry)
+            degradation = self.edge_degradations.get(edge, link.degradation)
 
-            for edge in self.refresh_candidates():
-                link = self.state.links[edge]
-                u, v = edge
-                cost = self.edge_costs.get(edge, 0.0)
-                lifetime = self.edge_lifetimes.get(edge, self.expiry)
-                degradation = self.edge_degradations.get(edge, link.degradation)
+            gain_u = self.estimate_refresh_gain(u, v, cost, lifetime, degradation)
+            gain_v = self.estimate_refresh_gain(v, u, cost, lifetime, degradation)
 
-                gain_u = self.estimate_refresh_gain(u, v, cost, lifetime, degradation)
-                gain_v = self.estimate_refresh_gain(v, u, cost, lifetime, degradation)
+            if gain_u >= gain_v:
+                proposer = u
+                score = gain_u
+            else:
+                proposer = v
+                score = gain_v
 
-                if gain_u >= gain_v:
-                    proposer = u
-                    score = gain_u
-                else:
-                    proposer = v
-                    score = gain_v
+            if score > 0:
+                actions.append((score, "refresh", edge, proposer))
 
-                if score > 0 and score > best_score:
-                    best_edge = edge
-                    best_score = score
-                    best_proposer = proposer
-                    best_action = "refresh"
+        actions.sort(key=lambda item: (-item[0], str(item[2]), str(item[3]), item[1]))
 
-            if best_edge is None:
+        selected_actions: List[Tuple[float, str, Edge, AgentId]] = []
+        for action in actions:
+            _, _, edge, proposer = action
+            cost = self.edge_costs.get(edge, 0.0)
+            if creation_costs[proposer] + cost > self.production[proposer]:
+                continue
+            selected_actions.append(action)
+            creation_costs[proposer] += cost
+            if self.max_new_links_per_slot is not None and len(selected_actions) >= self.max_new_links_per_slot:
                 break
 
-            u, v = best_edge
-            total_cost = self.edge_costs.get(best_edge, 0.0)
-            proposer = best_proposer if best_proposer is not None else u
-            creation_costs[proposer] += total_cost
-            lifetime = self.edge_lifetimes.get(best_edge, self.expiry)
-            degradation = self.edge_degradations.get(best_edge, self.degradation)
+        created: List[Edge] = []
+        for _, action_kind, edge, _ in selected_actions:
+            u, v = edge
+            lifetime = self.edge_lifetimes.get(edge, self.expiry)
 
-            if best_action == "refresh":
-                link = self.state.links[best_edge]
+            if action_kind == "refresh":
+                if edge not in self.state.links:
+                    continue
+                link = self.state.links[edge]
+                degradation = self.edge_degradations.get(edge, link.degradation)
                 link.remaining_life = lifetime
                 link.quality = 1.0
                 link.degradation = degradation
                 link.created_at = self.state.t
             else:
-                self.state.links[best_edge] = LinkState(
+                if edge in self.state.links:
+                    continue
+                degradation = self.edge_degradations.get(edge, self.degradation)
+                self.state.links[edge] = LinkState(
                     u=u,
                     v=v,
                     remaining_life=lifetime,
@@ -360,7 +363,7 @@ class DecentralizedExchangeSimulator:
                     initial=False,
                     created_at=self.state.t,
                 )
-            created.append(best_edge)
+            created.append(edge)
 
         return created, creation_costs
 
@@ -380,9 +383,8 @@ class DecentralizedExchangeSimulator:
         - convert the one-step gain into a discounted lifetime value;
         - subtract the cost paid by this agent.
 
-        For constant strategy, this automatically captures the dilution effect:
-        if many links to the same node are already accepted in the same slot, the degree has changed,
-        so the next candidate is recomputed with a lower expected share.
+        Candidate links are scored against the same pre-creation snapshot for the slot,
+        so simultaneous additions do not rescore each other during selection.
         """
         if paid_cost > self.production[agent]:
             return -math.inf

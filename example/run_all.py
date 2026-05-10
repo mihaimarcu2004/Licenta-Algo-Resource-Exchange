@@ -5,7 +5,7 @@ import networkx as nx
 from common import run_experiment
 
 GRAPH_KINDS = ["sparse", "dense", "small_world"]
-COST_KINDS = ["zero", "constant", "distance"]
+COST_KINDS = ["small", "medium", "big"]
 EXPIRIES = [None, 1, 3, 5, 10, 100]
 
 
@@ -17,7 +17,7 @@ if __name__ == "__main__":
     summary_header = (
         "graph_kind,cost_kind,expiry,"
         "equilibrium_found,equilibrium_start,equilibrium_period,"
-        "welfare_others_avg,fairness_jain"
+        "welfare_eisenberg_gale,fairness_jain"
     )
     print(summary_header)
 
@@ -36,8 +36,6 @@ if __name__ == "__main__":
                         expiry=expiry,
                         n=20,
                         seed=seed,
-                        constant_cost=1.0,
-                        distance_factor=0.8,
                         include_details=True,
                     )
                     expiry_label = "permanent" if expiry is None else str(expiry)
@@ -46,7 +44,7 @@ if __name__ == "__main__":
                         f"{result['equilibrium_found']},"
                         f"{result['equilibrium_start']},"
                         f"{result['equilibrium_period']},"
-                        f"{result['welfare_others_avg']:.6f},"
+                        f"{result['welfare_eisenberg_gale']:.6f},"
                         f"{result['fairness_jain']:.6f}"
                     )
                     print(line)

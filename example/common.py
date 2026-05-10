@@ -1,10 +1,17 @@
 import itertools
+import math
 import random
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import networkx as nx
 
 from exchange_sim import DecentralizedExchangeSimulator, normalize_edge
+
+COST_BANDS = {
+    "small": (0.5, 2.0),
+    "medium": (2.0, 5.0),
+    "big": (5.0, 9.0),
+}
 
 
 def jain_fairness(values: Iterable[float]) -> float:
@@ -20,6 +27,10 @@ def jain_fairness(values: Iterable[float]) -> float:
 def welfare_of_others(utilities: Dict[int, float]) -> Dict[int, float]:
     total = sum(utilities.values())
     return {agent: total - value for agent, value in utilities.items()}
+
+
+def eisenberg_gale_welfare(utilities: Dict[int, float], eps: float = 1e-9) -> float:
+    return sum(math.log(max(value, eps)) for value in utilities.values())
 
 
 def ensure_connected(G: nx.Graph) -> nx.Graph:
@@ -84,6 +95,17 @@ def make_zero_costs(G: nx.Graph) -> Dict[Tuple[int, int], float]:
     return build_edge_costs(nodes, initial_edges, lambda _u, _v: 0.0)
 
 
+def make_random_costs(
+    G: nx.Graph,
+    rng: random.Random,
+    low: float,
+    high: float,
+) -> Dict[Tuple[int, int], float]:
+    nodes = list(G.nodes())
+    initial_edges = list(G.edges())
+    return build_edge_costs(nodes, initial_edges, lambda _u, _v: rng.uniform(low, high))
+
+
 def build_edge_degradations(
     edge_costs: Dict[Tuple[int, int], float],
     rng: random.Random,
@@ -102,7 +124,7 @@ def run_experiment(
     strategy: str = "constant",
     constant_cost: float = 1.0,
     distance_factor: float = 0.8,
-    max_steps: int = 2000,
+    max_steps: int = 100000,
     refresh_threshold: Optional[float] = 0.8,
     include_details: bool = False,
 ) -> Dict[str, object]:
@@ -112,8 +134,12 @@ def run_experiment(
     initial_edges = list(G.edges())
 
     production = {node: rng.randint(6, 14) for node in nodes}
+    cost_rng = random.Random(seed + 37)
 
-    if cost_kind == "zero":
+    if cost_kind in COST_BANDS:
+        low, high = COST_BANDS[cost_kind]
+        edge_costs = make_random_costs(G, cost_rng, low, high)
+    elif cost_kind == "zero":
         edge_costs = make_zero_costs(G)
     elif cost_kind == "constant":
         edge_costs = make_constant_costs(G, constant_cost)
@@ -144,7 +170,7 @@ def run_experiment(
         degradation=0.95,
         refresh_threshold=refresh_threshold,
         discount=0.9,
-        max_new_links_per_slot=1,
+        max_new_links_per_slot=None,
         rng_seed=seed,
     )
 
@@ -171,14 +197,14 @@ def run_experiment(
     allocations_avg = {pair: amount / count for pair, amount in allocation_acc.items()}
 
     welfare_others = welfare_of_others(utilities_avg)
-    welfare_others_avg = sum(welfare_others.values()) / len(welfare_others) if welfare_others else 0.0
+    welfare_eg = eisenberg_gale_welfare(utilities_avg)
     fairness = jain_fairness(utilities_avg.values())
 
     payload: Dict[str, object] = {
         "equilibrium_found": equilibrium_found,
         "equilibrium_start": equilibrium_start,
         "equilibrium_period": equilibrium_period,
-        "welfare_others_avg": welfare_others_avg,
+        "welfare_eisenberg_gale": welfare_eg,
         "fairness_jain": fairness,
     }
 
@@ -196,7 +222,7 @@ def run_experiment(
 
 def print_header():
     print(
-        "expiry,equilibrium_found,equilibrium_start,equilibrium_period,welfare_others_avg,fairness_jain"
+        "expiry,equilibrium_found,equilibrium_start,equilibrium_period,welfare_eisenberg_gale,fairness_jain"
     )
 
 
@@ -207,6 +233,6 @@ def print_result(expiry: Optional[int], result: Dict[str, object]):
         f"{result['equilibrium_found']},"
         f"{result['equilibrium_start']},"
         f"{result['equilibrium_period']},"
-        f"{result['welfare_others_avg']:.6f},"
+        f"{result['welfare_eisenberg_gale']:.6f},"
         f"{result['fairness_jain']:.6f}"
     )

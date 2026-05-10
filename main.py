@@ -28,7 +28,7 @@ if __name__ == "__main__":
         expiry=3,
         degradation=0.95,
         discount=0.9,
-        max_new_links_per_slot=1,
+        max_new_links_per_slot=None,
         rng_seed=1,
     )
 
