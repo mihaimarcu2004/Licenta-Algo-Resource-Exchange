@@ -37,6 +37,8 @@ class SimulationState:
     links: Dict[Edge, LinkState]
     last_allocation: Allocation = field(default_factory=dict)
     last_creation_costs: Dict[AgentId, float] = field(default_factory=dict)
+    last_renewal_costs: Dict[AgentId, float] = field(default_factory=dict)
+    last_renewals: Dict[tuple[AgentId, AgentId], int] = field(default_factory=dict)
     last_received: Dict[AgentId, Dict[AgentId, float]] = field(default_factory=dict)
     exchange_ratios: Dict[AgentId, float] = field(default_factory=dict)
     utilities: Dict[AgentId, float] = field(default_factory=dict)
