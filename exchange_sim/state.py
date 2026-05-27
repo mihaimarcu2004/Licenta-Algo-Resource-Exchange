@@ -42,13 +42,16 @@ class SimulationState:
     last_received: Dict[AgentId, Dict[AgentId, float]] = field(default_factory=dict)
     exchange_ratios: Dict[AgentId, float] = field(default_factory=dict)
     utilities: Dict[AgentId, float] = field(default_factory=dict)
+    _neighbors_cache: Optional[Dict[AgentId, List[AgentId]]] = field(default=None, init=False, repr=False)
 
     def neighbors(self, agent: AgentId) -> List[AgentId]:
-        result: List[AgentId] = []
-        for edge, link in self.links.items():
-            if agent in edge:
-                result.append(link.other(agent))
-        return result
+        if self._neighbors_cache is None:
+            cache: Dict[AgentId, List[AgentId]] = {agent_id: [] for agent_id in self.agents}
+            for edge, link in self.links.items():
+                cache.setdefault(edge[0], []).append(link.other(edge[0]))
+                cache.setdefault(edge[1], []).append(link.other(edge[1]))
+            self._neighbors_cache = cache
+        return self._neighbors_cache.get(agent, [])
 
     def degree(self, agent: AgentId) -> int:
         return len(self.neighbors(agent))

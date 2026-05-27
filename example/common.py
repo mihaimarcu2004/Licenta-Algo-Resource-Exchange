@@ -1,9 +1,15 @@
 import itertools
 import math
 import random
+import sys
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import networkx as nx
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from exchange_sim import DecentralizedExchangeSimulator, normalize_edge
 
@@ -207,6 +213,15 @@ def run_experiment(
     renewal_life_threshold: Optional[int] = 1,
     min_link_flow: float = 1e-9,
     lifetime_kind: str = "small_lifetime",
+    ev_heuristics: Optional[Iterable[str]] = None,
+    ev_screening_top_k: int = 3,
+    ev_screening_margin: float = 0.1,
+    ev_screening_weight: float = 0.7,
+    ev_initial_signal_fraction: float = 0.05,
+    ev_cooldown_period: int = 5,
+    ev_cooldown_ratio_threshold: float = 0.1,
+    ev_adaptive_epsilon: float = 0.01,
+    link_evaluation_workers: int = 1,
     include_details: bool = False,
 ) -> Dict[str, object]:
     rng = random.Random(seed)
@@ -254,6 +269,15 @@ def run_experiment(
         renewal_life_threshold=renewal_life_threshold,
         min_link_flow=min_link_flow,
         discount=0.9,
+        ev_heuristics=ev_heuristics,
+        ev_screening_top_k=ev_screening_top_k,
+        ev_screening_margin=ev_screening_margin,
+        ev_screening_weight=ev_screening_weight,
+        ev_initial_signal_fraction=ev_initial_signal_fraction,
+        ev_cooldown_period=ev_cooldown_period,
+        ev_cooldown_ratio_threshold=ev_cooldown_ratio_threshold,
+        ev_adaptive_epsilon=ev_adaptive_epsilon,
+        link_evaluation_workers=link_evaluation_workers,
         max_new_links_per_slot=None,
         rng_seed=seed,
     )
