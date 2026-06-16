@@ -21,10 +21,15 @@ COST_BANDS = {
 LIFETIME_BANDS = {
     "small_lifetime": (1, 3),
     "medium_lifetime": (3, 7),
-    "large_lifetime": (8, 12),
-    "xl_lifetime": (12, 20),
-    "xxl_lifetime": (20, 100),
+    "large_lifetime": (7, 12),
 }
+PRODUCTION_MEAN = 10.0
+PRODUCTION_STD = 2.0
+PRODUCTION_MIN = 1.0
+
+
+def sample_production(rng: random.Random) -> float:
+    return max(PRODUCTION_MIN, rng.gauss(PRODUCTION_MEAN, PRODUCTION_STD))
 
 
 def jain_fairness(values: Iterable[float]) -> float:
@@ -185,6 +190,9 @@ def build_edge_lifetimes(
     if expiry is None or lifetime_kind == "permanent":
         return {edge: None for edge in edge_costs}
 
+    if lifetime_kind == "same_lifetime":
+        return {edge: int(expiry) for edge in edge_costs}
+
     if lifetime_kind in LIFETIME_BANDS:
         low, high = LIFETIME_BANDS[lifetime_kind]
         return {edge: rng.randint(low, high) for edge in edge_costs}
@@ -199,6 +207,25 @@ def build_edge_lifetimes(
     raise ValueError(f"Unknown lifetime kind: {lifetime_kind}")
 
 
+def state_welfare_metrics(state, edge_costs: Dict[Tuple[int, int], float]) -> Dict[str, float]:
+    utilities = state.utilities
+    exchange_ratios = state.exchange_ratios
+    moment_link_cost = sum(state.last_creation_costs.values()) + sum(state.last_renewal_costs.values())
+    average_utility = sum(utilities.values()) / len(utilities) if utilities else 0.0
+    welfare_eg = eisenberg_gale_welfare(utilities) if utilities else 0.0
+    active_edges = float(len(state.links))
+    average_degree = (2.0 * active_edges / len(state.agents)) if state.agents else 0.0
+    return {
+        "average_utility": average_utility,
+        "welfare_eisenberg_gale": welfare_eg,
+        "welfare_net": sum(utilities.values()) - moment_link_cost,
+        "fairness_jain": jain_fairness(utilities.values()),
+        "fairness_exchange_ratio_jain": jain_fairness(exchange_ratios.values()),
+        "active_edges": active_edges,
+        "average_degree": average_degree,
+    }
+
+
 def run_experiment(
     graph_kind: str,
     cost_kind: str,
@@ -208,28 +235,30 @@ def run_experiment(
     strategy: str = "constant",
     constant_cost: float = 1.0,
     distance_factor: float = 0.8,
+    cost_multiplier: float = 1.0,
     max_steps: int = 1000000000,
+    min_equilibrium_steps: int = 0,
+    equilibrium_precision: int = 9,
+    equilibrium_eps: float = 1e-9,
     refresh_threshold: Optional[float] = 0.8,
     renewal_life_threshold: Optional[int] = 1,
-    min_link_flow: float = 1e-9,
+    min_link_flow: float = 1e-4,
     lifetime_kind: str = "small_lifetime",
     ev_heuristics: Optional[Iterable[str]] = None,
-    ev_screening_top_k: int = 3,
-    ev_screening_margin: float = 0.1,
-    ev_screening_weight: float = 0.7,
-    ev_initial_signal_fraction: float = 0.05,
-    ev_cooldown_period: int = 5,
-    ev_cooldown_ratio_threshold: float = 0.1,
     ev_adaptive_epsilon: float = 0.01,
-    link_evaluation_workers: int = 1,
+    link_estimation_mode: str = "formula",
+    max_candidate_edges_per_agent: Optional[int] = None,
+    allow_link_formation: bool = True,
     include_details: bool = False,
+    include_time_series: bool = False,
+    welfare_time_interval: int = 100,
 ) -> Dict[str, object]:
     rng = random.Random(seed)
     G = generate_graph(graph_kind, n, seed)
     nodes = list(G.nodes())
     initial_edges = list(G.edges())
 
-    production = {node: rng.randint(6, 14) for node in nodes}
+    production = {node: sample_production(rng) for node in nodes}
     cost_rng = random.Random(seed + 37)
 
     if cost_kind in COST_BANDS:
@@ -247,6 +276,12 @@ def run_experiment(
         edge_costs = make_mixed_costs(G, cost_rng)
     else:
         raise ValueError(f"Unknown cost kind: {cost_kind}")
+    if cost_multiplier <= 0:
+        raise ValueError("cost_multiplier must be positive.")
+    if not math.isclose(cost_multiplier, 1.0):
+        edge_costs = {edge: cost * cost_multiplier for edge, cost in edge_costs.items()}
+    if not allow_link_formation:
+        edge_costs = {}
 
     deg_rng = random.Random(seed + 91)
     edge_degradations = build_edge_degradations(edge_costs, deg_rng)
@@ -270,25 +305,25 @@ def run_experiment(
         min_link_flow=min_link_flow,
         discount=0.9,
         ev_heuristics=ev_heuristics,
-        ev_screening_top_k=ev_screening_top_k,
-        ev_screening_margin=ev_screening_margin,
-        ev_screening_weight=ev_screening_weight,
-        ev_initial_signal_fraction=ev_initial_signal_fraction,
-        ev_cooldown_period=ev_cooldown_period,
-        ev_cooldown_ratio_threshold=ev_cooldown_ratio_threshold,
         ev_adaptive_epsilon=ev_adaptive_epsilon,
-        link_evaluation_workers=link_evaluation_workers,
+        link_estimation_mode=link_estimation_mode,
+        max_candidate_edges_per_agent=max_candidate_edges_per_agent,
         max_new_links_per_slot=None,
         rng_seed=seed,
     )
 
-    result = sim.find_equilibrium_states(max_steps=max_steps)
+    result = sim.find_equilibrium_states(
+        max_steps=max_steps,
+        precision=equilibrium_precision,
+        eps=equilibrium_eps,
+        min_steps=min_equilibrium_steps,
+    )
     if result is None:
-        states = sim.history[-100:] or [sim.state]
+        states = sim.history[-1000:] or [sim.state]
         equilibrium_found = False
         equilibrium_start = None
         equilibrium_period = None
-        measurement_window = "last_100"
+        measurement_window = "last_1000"
     else:
         equilibrium_start, equilibrium_period, states = result
         equilibrium_found = True
@@ -298,7 +333,8 @@ def run_experiment(
     exchange_ratio_acc: Dict[int, float] = {agent: 0.0 for agent in nodes}
     allocation_acc: Dict[Tuple[int, int], float] = {}
     renewal_acc: Dict[Tuple[int, int], float] = {}
-    active_cost_acc = 0.0
+    net_welfare_acc = 0.0
+    average_degree_acc = 0.0
     for state in states:
         for agent, value in state.utilities.items():
             utility_acc[agent] += value
@@ -308,19 +344,22 @@ def run_experiment(
             allocation_acc[pair] = allocation_acc.get(pair, 0.0) + amount
         for pair, decision in state.last_renewals.items():
             renewal_acc[pair] = renewal_acc.get(pair, 0.0) + decision
-        active_cost_acc += sum(edge_costs.get(edge, 0.0) for edge in state.links)
+        moment_link_cost = sum(state.last_creation_costs.values()) + sum(state.last_renewal_costs.values())
+        net_welfare_acc += sum(state.utilities.values()) - moment_link_cost
+        if nodes:
+            average_degree_acc += 2.0 * len(state.links) / len(nodes)
 
     count = float(len(states))
     utilities_avg = {agent: value / count for agent, value in utility_acc.items()}
     exchange_ratios_avg = {agent: value / count for agent, value in exchange_ratio_acc.items()}
     allocations_avg = {pair: amount / count for pair, amount in allocation_acc.items()}
     renewals_avg = {pair: amount / count for pair, amount in renewal_acc.items()}
-    active_cost_avg = active_cost_acc / count
 
     welfare_others = welfare_of_others(utilities_avg)
     average_utility = sum(utilities_avg.values()) / len(utilities_avg) if utilities_avg else 0.0
     welfare_eg = eisenberg_gale_welfare(utilities_avg)
-    welfare_net = welfare_eg - active_cost_avg
+    welfare_net = net_welfare_acc / count
+    average_degree = average_degree_acc / count
     fairness = jain_fairness(utilities_avg.values())
     fairness_exchange_ratio = jain_fairness(exchange_ratios_avg.values())
 
@@ -332,6 +371,7 @@ def run_experiment(
         "measurement_state_count": len(states),
         "lifetime_kind": lifetime_kind,
         "average_utility": average_utility,
+        "average_degree": average_degree,
         "welfare_eisenberg_gale": welfare_eg,
         "welfare_net": welfare_net,
         "fairness_jain": fairness,
@@ -349,13 +389,23 @@ def run_experiment(
         payload["nodes"] = nodes
         payload["edges"] = edges
 
+    if include_time_series:
+        interval = max(1, int(welfare_time_interval))
+        sampled_states = [state for state in sim.history if state.t % interval == 0]
+        if sim.history and (not sampled_states or sampled_states[-1].t != sim.history[-1].t):
+            sampled_states.append(sim.history[-1])
+        payload["time_series"] = [
+            {"t": state.t, **state_welfare_metrics(state, edge_costs)}
+            for state in sampled_states
+        ]
+
     return payload
 
 
 def print_header():
     print(
         "expiry,equilibrium_found,equilibrium_start,equilibrium_period,"
-        "measurement_window,measurement_state_count,average_utility,"
+        "measurement_window,measurement_state_count,average_utility,average_degree,"
         "welfare_eisenberg_gale,welfare_net,fairness_jain,fairness_exchange_ratio_jain"
     )
 
@@ -370,6 +420,7 @@ def print_result(expiry: Optional[int], result: Dict[str, object]):
         f"{result['measurement_window']},"
         f"{result['measurement_state_count']},"
         f"{result['average_utility']:.6f},"
+        f"{result['average_degree']:.6f},"
         f"{result['welfare_eisenberg_gale']:.6f},"
         f"{result['welfare_net']:.6f},"
         f"{result['fairness_jain']:.6f},"

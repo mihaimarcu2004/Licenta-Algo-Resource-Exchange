@@ -23,6 +23,7 @@ from common import (
     make_mixed_costs,
     make_random_costs,
     make_zero_costs,
+    sample_production,
 )
 from exchange_sim import DecentralizedExchangeSimulator
 
@@ -50,7 +51,7 @@ def build_simulator(
     graph = generate_graph(graph_kind, n, seed)
     nodes = list(graph.nodes())
     initial_edges = list(graph.edges())
-    production = {node: rng.randint(6, 14) for node in nodes}
+    production = {node: sample_production(rng) for node in nodes}
 
     cost_rng = random.Random(seed + 37)
     if cost_kind in COST_BANDS:
@@ -183,34 +184,18 @@ def save_animation(
         ax.axis("off")
 
         inactive_edges = [edge for edge in all_edges if edge not in active_edges]
-        inactive_within = [edge for edge in inactive_edges if groups.get(edge[0]) == groups.get(edge[1])]
-        inactive_bridge = [edge for edge in inactive_edges if groups.get(edge[0]) != groups.get(edge[1])]
         nx.draw_networkx_edges(
             layout_graph,
             pos,
-            edgelist=inactive_within,
+            edgelist=inactive_edges,
             edge_color="#d0d0d0",
             width=0.8,
             alpha=0.25,
             ax=ax,
         )
-        nx.draw_networkx_edges(
-            layout_graph,
-            pos,
-            edgelist=inactive_bridge,
-            edge_color="#f2b8a0",
-            width=0.7,
-            alpha=0.18,
-            style="dashed",
-            ax=ax,
-        )
 
         initial_edges = [edge for edge, data in active_edges.items() if data["initial"]]
         created_edges = [edge for edge, data in active_edges.items() if not data["initial"]]
-        initial_within = [edge for edge in initial_edges if groups.get(edge[0]) == groups.get(edge[1])]
-        initial_bridge = [edge for edge in initial_edges if groups.get(edge[0]) != groups.get(edge[1])]
-        created_within = [edge for edge in created_edges if groups.get(edge[0]) == groups.get(edge[1])]
-        created_bridge = [edge for edge in created_edges if groups.get(edge[0]) != groups.get(edge[1])]
 
         def edge_width(edge: Tuple[object, object]) -> float:
             quality = active_edges[edge]["quality"]
@@ -219,39 +204,19 @@ def save_animation(
         nx.draw_networkx_edges(
             graph,
             pos,
-            edgelist=initial_within,
+            edgelist=initial_edges,
             edge_color="#555555",
-            width=[edge_width(edge) for edge in initial_within],
+            width=[edge_width(edge) for edge in initial_edges],
             alpha=0.75,
             ax=ax,
         )
         nx.draw_networkx_edges(
             graph,
             pos,
-            edgelist=initial_bridge,
-            edge_color="#bf6b35",
-            width=[edge_width(edge) for edge in initial_bridge],
-            alpha=0.85,
-            style="dashed",
-            ax=ax,
-        )
-        nx.draw_networkx_edges(
-            graph,
-            pos,
-            edgelist=created_within,
+            edgelist=created_edges,
             edge_color="#1976d2",
-            width=[edge_width(edge) for edge in created_within],
+            width=[edge_width(edge) for edge in created_edges],
             alpha=0.85,
-            ax=ax,
-        )
-        nx.draw_networkx_edges(
-            graph,
-            pos,
-            edgelist=created_bridge,
-            edge_color="#d62728",
-            width=[edge_width(edge) for edge in created_bridge],
-            alpha=0.9,
-            style="dashed",
             ax=ax,
         )
         nx.draw_networkx_nodes(
@@ -274,7 +239,7 @@ def save_animation(
         ax.text(
             0.01,
             0.01,
-            f"Utilities: {utility_text}\nBlue/gray = within group, red/brown dashed = bridge links",
+            f"Utilities: {utility_text}\nBlue = created links, gray = initial links",
             transform=ax.transAxes,
             fontsize=8,
             ha="left",
@@ -322,9 +287,8 @@ def main() -> None:
             "small_lifetime",
             "medium_lifetime",
             "large_lifetime",
-            "xl_lifetime",
-            "xxl_lifetime",
             "mixed_lifetime",
+            "same_lifetime",
             "permanent",
         ],
         default="small_lifetime",

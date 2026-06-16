@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from animate_graph import build_simulator, collect_snapshots, save_animation
@@ -11,10 +12,9 @@ LIFETIME_CONFIGS = {
     "small_lifetime": (3, "small_lifetime"),
     "medium_lifetime": (7, "medium_lifetime"),
     "large_lifetime": (12, "large_lifetime"),
-    "xl_lifetime": (20, "xl_lifetime"),
-    "xxl_lifetime": (100, "xxl_lifetime"),
-    "mixed_lifetime": (100, "mixed_lifetime"),
-    "permanent": (None, "permanent"),
+    "mixed_lifetime": (7, "mixed_lifetime"),
+    "same_lifetime_3": (3, "same_lifetime"),
+    "same_lifetime_7": (7, "same_lifetime"),
 }
 STRATEGIES = ["egalitarian", "proportional_1", "proportional_2"]
 
@@ -35,7 +35,7 @@ def main() -> None:
     parser.add_argument("--cost-kinds", default="all")
     parser.add_argument(
         "--lifetime-configs",
-        default="small_lifetime,medium_lifetime,large_lifetime,xl_lifetime,xxl_lifetime,mixed_lifetime,permanent",
+        default="small_lifetime,medium_lifetime,large_lifetime,mixed_lifetime,same_lifetime_3,same_lifetime_7",
     )
     parser.add_argument("--strategies", default="all")
     parser.add_argument("--nodes", type=int, default=20)
@@ -52,6 +52,10 @@ def main() -> None:
     lifetime_configs = parse_csv_choices(args.lifetime_configs, list(LIFETIME_CONFIGS))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = args.output_dir / "matplotlib_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(cache_dir))
+    os.environ.setdefault("XDG_CACHE_HOME", str(cache_dir))
 
     combo_idx = 0
     for graph_kind in graph_kinds:
